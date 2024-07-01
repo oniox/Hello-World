@@ -1,0 +1,106 @@
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.Constructor;
+
+import java.io.InputStream;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class ApiGatewayParser {
+    public ApiGatewayConfig parse(InputStream inputStream) {
+        Yaml yaml = new Yaml(new Constructor(ApiGatewayConfig.class));
+        return yaml.load(inputStream);
+    }
+
+    public Map<String, ApiGateway> getApiGatewayMap(ApiGatewayConfig config) {
+        return config.getApiGateways().stream()
+                .collect(Collectors.toMap(
+                        ApiGateway::getName,
+                        gateway -> gateway
+                ));
+    }
+
+    public Map<String, Link> getLinksByDisplayName(ApiGatewayConfig config) {
+        return config.getApiGateways().stream()
+                .flatMap(gateway -> gateway.getEndpoint().getTargets().getLinks().stream())
+                .collect(Collectors.toMap(
+                        Link::getDisplayName,
+                        link -> link,
+                        (link1, link2) -> link1  // In case of duplicate keys, keep the first one
+                ));
+    }
+}
+
+// Updated ApiGatewayParserTest.java
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Map;
+
+class ApiGatewayParserTest {
+
+    @Test
+    void testParse() {
+        // ... (previous test code remains the same)
+    }
+
+    @Test
+    void testGetApiGatewayMap() {
+        // ... (previous test code remains the same)
+    }
+
+    @Test
+    void testGetLinksByDisplayName() {
+        String yamlContent = """
+            apiGateways:
+              - name: "MainGateway"
+                endpoint:
+                  targets:
+                    links:
+                      - displayName: "Get User Profile"
+                        httpAction: "GET"
+                        url: "https://api.example.com/users/profile"
+                        tokenAuth: true
+                        payload: ""
+              - name: "SecondaryGateway"
+                endpoint:
+                  targets:
+                    links:
+                      - displayName: "Get Products"
+                        httpAction: "GET"
+                        url: "https://api.example.com/products"
+                        tokenAuth: false
+                        payload: ""
+                      - displayName: "Create Order"
+                        httpAction: "POST"
+                        url: "https://api.example.com/orders"
+                        tokenAuth: true
+                        payload: "{ \\"productId\\": \\"123\\", \\"quantity\\": 2 }"
+            """;
+
+        InputStream inputStream = new ByteArrayInputStream(yamlContent.getBytes(StandardCharsets.UTF_8));
+        ApiGatewayParser parser = new ApiGatewayParser();
+        ApiGatewayConfig config = parser.parse(inputStream);
+
+        Map<String, Link> linkMap = parser.getLinksByDisplayName(config);
+
+        assertNotNull(linkMap);
+        assertEquals(3, linkMap.size());
+        assertTrue(linkMap.containsKey("Get User Profile"));
+        assertTrue(linkMap.containsKey("Get Products"));
+        assertTrue(linkMap.containsKey("Create Order"));
+
+        Link getUserProfileLink = linkMap.get("Get User Profile");
+        assertEquals("GET", getUserProfileLink.getHttpAction());
+        assertEquals("https://api.example.com/users/profile", getUserProfileLink.getUrl());
+        assertTrue(getUserProfileLink.isTokenAuth());
+
+        Link createOrderLink = linkMap.get("Create Order");
+        assertEquals("POST", createOrderLink.getHttpAction());
+        assertEquals("https://api.example.com/orders", createOrderLink.getUrl());
+        assertTrue(createOrderLink.isTokenAuth());
+        assertEquals("{ \"productId\": \"123\", \"quantity\": 2 }", createOrderLink.getPayload());
+    }
+}
