@@ -1,1 +1,88 @@
-Hello World
+ Certainly! I'll create a unit test for a Spring REST Controller that takes trade IDs as a parameter and returns a JSON representation of the trades. I'll use JUnit 5 for testing and Mockito for mocking dependencies. Here's a sample implementation:
+
+
+
+```java
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+
+import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+class TradeControllerTest {
+
+    private MockMvc mockMvc;
+
+    @Mock
+    private TradeService tradeService;
+
+    @InjectMocks
+    private TradeController tradeController;
+
+    @BeforeEach
+    void setUp() {
+        MockitoAnnotations.openMocks(this);
+        mockMvc = MockMvcBuilders.standaloneSetup(tradeController).build();
+    }
+
+    @Test
+    void testGetTradesByIds() throws Exception {
+        // Given
+        List<Long> tradeIds = Arrays.asList(1L, 2L, 3L);
+        List<Trade> trades = Arrays.asList(
+            new Trade(1L, 1, new Date()),
+            new Trade(2L, 1, new Date()),
+            new Trade(3L, 1, new Date())
+        );
+
+        when(tradeService.getTradesByIds(tradeIds)).thenReturn(trades);
+
+        // When & Then
+        mockMvc.perform(get("/api/trades")
+                .param("ids", "1,2,3")
+                .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$[0].id").value(1))
+                .andExpect(jsonPath("$[1].id").value(2))
+                .andExpect(jsonPath("$[2].id").value(3))
+                .andExpect(jsonPath("$[0].version").value(1))
+                .andExpect(jsonPath("$[1].version").value(1))
+                .andExpect(jsonPath("$[2].version").value(1))
+                .andExpect(jsonPath("$[0].date").exists())
+                .andExpect(jsonPath("$[1].date").exists())
+                .andExpect(jsonPath("$[2].date").exists());
+
+        verify(tradeService, times(1)).getTradesByIds(tradeIds);
+    }
+}
+```
+
+This unit test covers the following aspects:
+
+1. It sets up a MockMvc instance to simulate HTTP requests to the controller.
+2. It mocks the TradeService dependency.
+3. It tests the GET endpoint that accepts trade IDs as parameters.
+4. It verifies that the correct JSON response is returned, including the trade ID, version, and date.
+5. It checks that the TradeService's getTradesByIds method is called with the correct parameters.
+
+To use this test, you'll need to have the following classes and dependencies:
+
+1. TradeController: The Spring REST Controller being tested.
+2. TradeService: The service class that the controller depends on.
+3. Trade: A model class representing a trade with id, version, and date properties.
+
+Make sure to include the necessary Spring Boot Test and Mockito dependencies in your project.
+
+Would you like me to explain any part of the test in more detail?
