@@ -5,7 +5,7 @@ generate_json() {
   local id="$1"
   local version="$2"
 
-  echo "{\"attributes\": {\"domain\": \"Sab\", \"id\": \"$id\", \"version\": \"$version\"}}"
+  echo "{\"attributes\": {\"domain\": \"Sabre\", \"id\": \"$id\", \"version\": \"$version\"}}"
 }
 
 # Check if a CSV file is provided as an argument
@@ -16,8 +16,16 @@ fi
 
 csv_file="$1"
 
+# Initialize an empty array to store JSON objects
+json_array=()
+
 # Read the CSV file
 while IFS=, read -r id version; do
   json_output=$(generate_json "$id" "$version")
-  echo "$json_output"
+  json_array+=("$json_output")
 done < "$csv_file"
+
+# Create a single JSON array by joining the individual JSON objects
+final_json="[${json_array[*]}]"
+
+echo "$final_json"
