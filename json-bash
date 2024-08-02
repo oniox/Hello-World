@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Function to generate JSON for a given ID and version
+generate_json() {
+  local id="$1"
+  local version="$2"
+
+  echo "{\"attributes\": {\"domain\": \"Sab\", \"id\": \"$id\", \"version\": \"$version\"}}"
+}
+
+# Check if a CSV file is provided as an argument
+if [ $# -ne 1 ]; then
+  echo "Usage: $0 <csv_file>"
+  exit 1
+fi
+
+csv_file="$1"
+
+# Read the CSV file
+while IFS=, read -r id version; do
+  json_output=$(generate_json "$id" "$version")
+  echo "$json_output"
+done < "$csv_file"
