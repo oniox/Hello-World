@@ -1,31 +1,32 @@
 #!/bin/bash
 
-# Function to generate JSON for a given ID and version
-generate_json() {
-  local id="$1"
-  local version="$2"
+# Function to process CSV file
+process_csv() {
+    input_file=$1
 
-  echo "{\"attributes\": {\"domain\": \"Sabre\", \"id\": \"$id\", \"version\": \"$version\"}}"
+    # Start the JSON array
+    echo "["
+
+    # Read the CSV file line by line
+    while IFS=',' read -r id version
+    do
+        # Skip empty lines
+        if [ -z "$id" ] || [ -z "$version" ]; then
+            continue
+        fi
+
+        # Generate JSON object for each row
+        cat << EOF
+    {
+        "attributes": {
+            "domain": "Domain",
+            "id": "$id",
+            "version": $version
+        }
+    },
+EOF
+    done < "$input_file"
+
+    # Remove the trailing comma and close the JSON array
+    sed '$s/,$//' | sed '$a]'
 }
-
-# Check if a CSV file is provided as an argument
-if [ $# -ne 1 ]; then
-  echo "Usage: $0 <csv_file>"
-  exit 1
-fi
-
-csv_file="$1"
-
-# Initialize an empty array to store JSON objects
-json_array=()
-
-# Read the CSV file
-while IFS=, read -r id version; do
-  json_output=$(generate_json "$id" "$version")
-  json_array+=("$json_output")
-done < "$csv_file"
-
-# Create a single JSON array by joining the individual JSON objects
-final_json="[${json_array[*]}]"
-
-echo "$final_json"
