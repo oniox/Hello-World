@@ -1,0 +1,79 @@
+ Got it, let's update the code to populate the HikariConfig using `@ConfigurationProperties` instead of individual `@Value` annotations. This will make the configuration more concise and easier to manage.
+
+Here's the updated code:
+
+
+
+```java
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import javax.sql.DataSource;
+
+@Configuration
+@ConfigurationProperties(prefix = "databricks.jdbc")
+public class DatabricksSqlWarehouseConfig extends HikariConfig {
+
+    @Bean
+    public DataSource dataSource() {
+        return new HikariDataSource(this);
+    }
+}
+```
+
+And here's the updated unit test:
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
+
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.SQLException;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@SpringBootTest
+@TestPropertySource(properties = {
+    "databricks.jdbc.jdbc-url=jdbc:databricks://<host>:443/default;HttpPath=<http-path>",
+    "databricks.jdbc.username=myUsername",
+    "databricks.jdbc.password=myPassword",
+    "databricks.jdbc.token=myToken",
+    "databricks.jdbc.maximum-pool-size=10",
+    "databricks.jdbc.minimum-idle=5",
+    "databricks.jdbc.idle-timeout=300",
+    "databricks.jdbc.max-lifetime=1800"
+})
+@ActiveProfiles("test")
+class DatabricksSqlWarehouseConfigTest {
+
+    @Autowired
+    private DataSource dataSource;
+
+    @Test
+    void testDataSourceConfiguration() throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            assertThat(connection).isNotNull();
+            assertThat(connection.getMetaData().getURL()).contains("jdbc:databricks");
+        }
+    }
+}
+```
+
+Here's what changed:
+
+1. In the `DatabricksSqlWarehouseConfig` class, we extended the `HikariConfig` class and added the `@ConfigurationProperties` annotation with the prefix `"databricks.jdbc"`. This allows Spring to automatically bind the properties with the corresponding `HikariConfig` fields.
+2. We removed the individual `@Value` annotations and the manual configuration of the `HikariConfig` instance in the `dataSource()` method. Instead, we just return a new `HikariDataSource` instance with the `this` reference, which now contains the populated `HikariConfig`.
+3. In the unit test, we updated the `@TestPropertySource` annotations to match the new property names used by the `HikariConfig` class (e.g., `"databricks.jdbc.jdbc-url"`, `"databricks.jdbc.maximum-pool-size"`).
+
+The advantage of this approach is that it makes the configuration more concise and easier to manage. You no longer need to manually set each property on the `HikariConfig` instance, as Spring will automatically bind the properties for you.
+
+To use this setup, you'll need to ensure that the necessary properties (JDBC URL, username, password, token, and pool settings) are available in your application's environment, either through application properties, environment variables, or other means.
+
+Let me know if you have any other questions or if you need further assistance.
