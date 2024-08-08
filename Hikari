@@ -1,0 +1,128 @@
+ Sure, let's implement a Spring Boot Configuration class that creates a Databricks SQL Warehouse data source, and then write a unit test for it.
+
+
+
+```java
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import javax.sql.DataSource;
+
+@Configuration
+public class DatabricksSqlWarehouseConfig {
+
+    @Value("${databricks.jdbc.url}")
+    private String jdbcUrl;
+
+    @Value("${databricks.jdbc.username}")
+    private String username;
+
+    @Value("${databricks.jdbc.password}")
+    private String password;
+
+    @Value("${databricks.jdbc.token}")
+    private String token;
+
+    @Value("${databricks.jdbc.maxPoolSize}")
+    private int maxPoolSize;
+
+    @Value("${databricks.jdbc.minIdle}")
+    private int minIdle;
+
+    @Value("${databricks.jdbc.idleTimeout}")
+    private int idleTimeout;
+
+    @Value("${databricks.jdbc.maxLifetime}")
+    private int maxLifetime;
+
+    @Bean
+    public DataSource dataSource() {
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl(jdbcUrl);
+        config.setUsername(username);
+        config.setPassword(password);
+        config.setMaximumPoolSize(maxPoolSize);
+        config.setMinimumIdle(minIdle);
+        config.setIdleTimeout(idleTimeout * 1000L);
+        config.setMaxLifetime(maxLifetime * 1000L);
+        config.addDataSourceProperty("databricks.connectionTimeout", "30");
+
+        // Use the token if it's provided, otherwise use the username and password
+        if (token != null && !token.isEmpty()) {
+            config.addDataSourceProperty("PersonalAccessToken", token);
+        }
+
+        return new HikariDataSource(config);
+    }
+}
+```
+
+Here's the corresponding unit test:
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
+
+import javax.sql.DataSource;
+import java.sql.Connection;
+import java.sql.SQLException;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@SpringBootTest
+@TestPropertySource(properties = {
+    "databricks.jdbc.url=jdbc:databricks://<host>:443/default;HttpPath=<http-path>",
+    "databricks.jdbc.username=myUsername",
+    "databricks.jdbc.password=myPassword",
+    "databricks.jdbc.token=myToken",
+    "databricks.jdbc.maxPoolSize=10",
+    "databricks.jdbc.minIdle=5",
+    "databricks.jdbc.idleTimeout=300",
+    "databricks.jdbc.maxLifetime=1800"
+})
+@ActiveProfiles("test")
+class DatabricksSqlWarehouseConfigTest {
+
+    @Autowired
+    private DataSource dataSource;
+
+    @Test
+    void testDataSourceConfiguration() throws SQLException {
+        try (Connection connection = dataSource.getConnection()) {
+            assertThat(connection).isNotNull();
+            assertThat(connection.getMetaData().getURL()).contains("jdbc:databricks");
+        }
+    }
+}
+```
+
+Here's how the code works:
+
+1. The `DatabricksSqlWarehouseConfig` class is a Spring `@Configuration` class that creates a `DataSource` bean using the Hikari connection pool.
+2. The configuration class reads the necessary properties (JDBC URL, username, password, token, pool settings) from the application's environment using `@Value` annotations.
+3. The `dataSource()` method creates a `HikariConfig` instance and sets the appropriate properties, including the connection timeout, maximum pool size, minimum idle connections, and more.
+4. If a token is provided, it's used for authentication; otherwise, the username and password are used.
+5. The `HikariDataSource` is created and returned as the `DataSource` bean.
+
+The unit test, `DatabricksSqlWarehouseConfigTest`, verifies the configuration:
+
+1. The `@SpringBootTest` annotation loads the entire Spring application context for the test.
+2. The `@TestPropertySource` annotation is used to provide the necessary properties for the test environment.
+3. The `@Autowired` annotation is used to inject the `DataSource` bean into the test class.
+4. The `testDataSourceConfiguration()` method checks that the `DataSource` is not null and that the JDBC URL contains the expected "jdbc:databricks" prefix.
+
+To use this setup, you'll need to:
+
+1. Add the Hikari connection pool library to your project's dependencies.
+2. Ensure that the necessary properties (JDBC URL, username, password, token, and pool settings) are available in your application's environment, either through application properties, environment variables, or other means.
+3. Update the `<host>` and `<http-path>` placeholders in the `@TestPropertySource` with your actual Databricks cluster details.
+
+This configuration and test setup provide a reusable way to set up a Databricks SQL Warehouse data source in a Spring Boot application, along with a unit test to verify the configuration.
+
+Let me know if you have any other questions or if you need further assistance.
