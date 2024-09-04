@@ -1,0 +1,6 @@
+SELECT
+    SUBSTR(uniqueid, 1, INSTR(uniqueid, '_') - 1) AS id,
+    SUBSTR(uniqueid, INSTR(uniqueid, '_') + 1, INSTR(uniqueid, '_', INSTR(uniqueid, '_') + 1) - INSTR(uniqueid, '_') - 1) AS domain,
+    SUBSTR(uniqueid, INSTR(uniqueid, '_', INSTR(uniqueid, '_') + 1) + 1) AS version
+FROM
+    your_table_name;
