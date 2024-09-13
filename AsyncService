@@ -1,0 +1,94 @@
+ Certainly! I'll update the code to use a ThreadPool for managing the asynchronous tasks. This approach provides better control over resource utilization and allows you to handle multiple concurrent requests efficiently. Here's the updated code:
+
+```java
+import java.util.concurrent.*;
+
+@Configuration
+public class AsyncConfig {
+    @Bean(name = "taskExecutor")
+    public Executor taskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("AsyncThread-");
+        executor.initialize();
+        return executor;
+    }
+}
+
+@Service
+public class AsyncService {
+    
+    @Autowired
+    @Qualifier("taskExecutor")
+    private Executor taskExecutor;
+
+    public CompletableFuture<String> performLongRunningTask() {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                // Simulate long-running task
+                Thread.sleep(5000); // Replace with your actual long-running operation
+                return "Task completed successfully";
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return "Task was interrupted";
+            }
+        }, taskExecutor)
+        .completeOnTimeout("Task timed out", 10, TimeUnit.SECONDS)
+        .thenApply(result -> {
+            if (result.equals("Task timed out")) {
+                return "The operation timed out. Please try again later.";
+            } else {
+                return "Operation completed: " + result;
+            }
+        });
+    }
+}
+
+@RestController
+public class AsyncController {
+
+    @Autowired
+    private AsyncService asyncService;
+
+    @GetMapping("/start-task")
+    public CompletableFuture<String> startTask() {
+        return asyncService.performLongRunningTask();
+    }
+}
+```
+
+Key changes and explanations:
+
+1. `AsyncConfig` class:
+   - This configuration class sets up a `ThreadPoolTaskExecutor`.
+   - `corePoolSize`: The number of threads to keep in the pool, even if they are idle.
+   - `maxPoolSize`: The maximum number of threads to allow in the pool.
+   - `queueCapacity`: The capacity of the queue used for holding tasks before they are executed.
+
+2. `AsyncService` class:
+   - We inject the `taskExecutor` bean into our service.
+   - In `performLongRunningTask()`, we pass the `taskExecutor` as the second argument to `CompletableFuture.supplyAsync()`.
+
+3. The rest of the implementation remains the same, including timeout handling and result processing.
+
+Benefits of using a ThreadPool:
+- Reuses threads, reducing the overhead of thread creation.
+- Provides better control over the number of concurrent tasks.
+- Helps in managing system resources more efficiently.
+- Allows for easy scaling by adjusting pool parameters.
+
+Remember to adjust the thread pool parameters based on your specific needs and system capabilities. The values provided here are just examples.
+
+Also, don't forget to add the `@EnableAsync` annotation to one of your configuration classes to enable asynchronous processing:
+
+```java
+@Configuration
+@EnableAsync
+public class AsyncConfig {
+    // ... (rest of the config as above)
+}
+```
+
+This setup allows you to handle long-running tasks efficiently, manage timeouts, and control the level of concurrency in your application. Would you like me to explain any part of this implementation in more detail or discuss how to handle specific scenarios with this setup?
