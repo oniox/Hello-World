@@ -873,3 +873,33 @@ Benefits of Using Spring Data/JdbcTemplate
 
 Would you like me to add more features, such as logging or error handling?
 
+
+
+-- Step 1: Create the staging table (if not exists)
+CREATE TABLE #staging_table (
+    id INT,
+    col1 NVARCHAR(255),
+    col2 NVARCHAR(255),
+    last_update DATETIME
+);
+
+-- Step 2: Load data into the staging table
+INSERT INTO #staging_table (id, col1, col2, last_update)
+VALUES (1, 'value1', 'value2', '2024-11-21 10:00:00');
+
+-- Step 3: Perform the MERGE operation
+MERGE INTO target_table AS target
+USING #staging_table AS source
+ON target.id = source.id
+WHEN MATCHED THEN
+    UPDATE SET 
+        target.col1 = source.col1,
+        target.col2 = source.col2,
+        target.last_update = source.last_update
+WHEN NOT MATCHED THEN
+    INSERT (id, col1, col2, last_update)
+    VALUES (source.id, source.col1, source.col2, source.last_update);
+
+-- Step 4: Truncate or drop the staging table
+TRUNCATE TABLE #staging_table;
+
