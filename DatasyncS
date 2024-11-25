@@ -1,0 +1,875 @@
+Here’s how to rewrite the synchronization code using Spring Data and JdbcTemplate for cleaner and more maintainable code.
+
+
+---
+
+Spring Data/JdbcTemplate Implementation
+
+1. Configuration: Define a Spring configuration for your data sources (Oracle and SQL Server).
+
+
+2. Repository Layer: Use JdbcTemplate for interacting with the databases.
+
+
+3. Service Layer: Implement the synchronization logic with transaction management.
+
+
+4. Main Application: Orchestrate the process.
+
+
+
+
+---
+
+1. Spring Configuration
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import javax.sql.DataSource;
+
+@Configuration
+public class DataSourceConfig {
+
+    @Bean
+    public DataSource oracleDataSource() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource();
+        dataSource.setDriverClassName("oracle.jdbc.driver.OracleDriver");
+        dataSource.setUrl("jdbc:oracle:thin:@//host:port/service");
+        dataSource.setUsername("oracle_user");
+        dataSource.setPassword("oracle_password");
+        return dataSource;
+    }
+
+    @Bean
+    public DataSource sqlServerDataSource() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource();
+        dataSource.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        dataSource.setUrl("jdbc:sqlserver://host:port;databaseName=yourDB");
+        dataSource.setUsername("sqlserver_user");
+        dataSource.setPassword("sqlserver_password");
+        return dataSource;
+    }
+
+    @Bean
+    public JdbcTemplate oracleJdbcTemplate(DataSource oracleDataSource) {
+        return new JdbcTemplate(oracleDataSource);
+    }
+
+    @Bean
+    public JdbcTemplate sqlServerJdbcTemplate(DataSource sqlServerDataSource) {
+        return new JdbcTemplate(sqlServerDataSource);
+    }
+}
+
+
+---
+
+2. Repository Layer
+
+Oracle Repository:
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Timestamp;
+import java.util.List;
+
+@Repository
+public class OracleRepository {
+    private final JdbcTemplate jdbcTemplate;
+
+    public OracleRepository(JdbcTemplate oracleJdbcTemplate) {
+        this.jdbcTemplate = oracleJdbcTemplate;
+    }
+
+    public List<Record> fetchSourceData(Timestamp lastUpdate) {
+        String query = "SELECT id, col1, col2, last_update FROM source_table WHERE last_update > ?";
+        return jdbcTemplate.query(query, new Object[]{lastUpdate}, (rs, rowNum) -> 
+            new Record(
+                rs.getInt("id"),
+                rs.getString("col1"),
+                rs.getString("col2"),
+                rs.getTimestamp("last_update")
+            )
+        );
+    }
+}
+
+SQL Server Repository:
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Timestamp;
+
+@Repository
+public class SqlServerRepository {
+    private final JdbcTemplate jdbcTemplate;
+
+    public SqlServerRepository(JdbcTemplate sqlServerJdbcTemplate) {
+        this.jdbcTemplate = sqlServerJdbcTemplate;
+    }
+
+    public Timestamp fetchMaxLastUpdate() {
+        String query = "SELECT MAX(last_update) FROM target_table";
+        return jdbcTemplate.queryForObject(query, Timestamp.class);
+    }
+
+    public void executeMergeQuery(String mergeQuery) {
+        jdbcTemplate.execute(mergeQuery);
+    }
+}
+
+
+---
+
+3. Service Layer
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.sql.Timestamp;
+import java.util.List;
+
+@Service
+public class DataSyncService {
+
+    private final OracleRepository oracleRepository;
+    private final SqlServerRepository sqlServerRepository;
+
+    public DataSyncService(OracleRepository oracleRepository, SqlServerRepository sqlServerRepository) {
+        this.oracleRepository = oracleRepository;
+        this.sqlServerRepository = sqlServerRepository;
+    }
+
+    @Transactional
+    public void syncData() {
+        // Fetch max last_update from SQL Server
+        Timestamp maxLastUpdate = sqlServerRepository.fetchMaxLastUpdate();
+        if (maxLastUpdate == null) {
+            maxLastUpdate = new Timestamp(0); // Default to epoch
+        }
+
+        // Fetch source data from Oracle
+        List<Record> sourceRecords = oracleRepository.fetchSourceData(maxLastUpdate);
+
+        // Process records in chunks
+        int batchSize = 500;
+        for (int i = 0; i < sourceRecords.size(); i += batchSize) {
+            List<Record> batch = sourceRecords.subList(i, Math.min(i + batchSize, sourceRecords.size()));
+
+            // Generate the dynamic CTE and execute the MERGE statement
+            String mergeQuery = generateMergeQuery(batch);
+            sqlServerRepository.executeMergeQuery(mergeQuery);
+        }
+    }
+
+    private String generateMergeQuery(List<Record> records) {
+        StringBuilder cteBuilder = new StringBuilder("WITH SourceCTE (id, col1, col2, last_update) AS (VALUES ");
+
+        for (int i = 0; i < records.size(); i++) {
+            Record record = records.get(i);
+            cteBuilder.append("(")
+                      .append(record.getId()).append(", ")
+                      .append("'").append(record.getCol1().replace("'", "''")).append("', ")
+                      .append("'").append(record.getCol2().replace("'", "''")).append("', ")
+                      .append("'").append(record.getLastUpdate()).append("')");
+            if (i < records.size() - 1) {
+                cteBuilder.append(", ");
+            }
+        }
+        cteBuilder.append(") ");
+
+        return cteBuilder.append("""
+            MERGE INTO target_table AS target
+            USING SourceCTE AS source
+            ON target.id = source.id
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.col1 = source.col1,
+                    target.col2 = source.col2,
+                    target.last_update = source.last_update
+            WHEN NOT MATCHED THEN
+                INSERT (id, col1, col2, last_update)
+                VALUES (source.id, source.col1, source.col2, source.last_update);
+        """).toString();
+    }
+}
+
+
+---
+
+4. Main Application
+
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class DataSyncApplication implements CommandLineRunner {
+
+    private final DataSyncService dataSyncService;
+
+    public DataSyncApplication(DataSyncService dataSyncService) {
+        this.dataSyncService = dataSyncService;
+    }
+
+    public static void main(String[] args) {
+        SpringApplication.run(DataSyncApplication.class, args);
+    }
+
+    @Override
+    public void run(String... args) {
+        dataSyncService.syncData();
+    }
+}
+
+
+---
+
+Benefits of Using Spring Data/JdbcTemplate
+
+1. Simplified Configuration and Boilerplate: JDBC setup is handled declaratively.
+
+
+2. Transaction Management: Spring ensures atomicity across chunks with @Transactional.
+
+
+3. Dependency Injection: Makes it easier to test and maintain the code.
+
+
+4. Clean Code: Separates concerns across configuration, repository, service, and main layers.
+
+
+
+Would you like me to add more features, such as logging or error handling?
+
+CREATE TABLE #SourceData (
+    id INT,
+    col1 NVARCHAR(255),
+    col2 NVARCHAR(255),
+    last_update DATETIME
+);
+
+-- Insert source data from Oracle into #SourceData
+-- This can be done using JDBC or a bulk insert mechanism.
+INSERT INTO #SourceData (id, col1, col2, last_update)
+VALUES
+    (1, 'Value1', 'Value2', '2024-11-20 10:00:00'),
+    (2, 'Value3', 'Value4', '2024-11-20 11:00:00');
+
+WITH SourceCTE AS (
+    SELECT id, col1, col2, last_update
+    FROM #SourceData
+)
+
+
+MERGE INTO target_table AS target
+USING SourceCTE AS source
+ON target.id = source.id
+WHEN MATCHED THEN
+    UPDATE SET 
+        target.col1 = source.col1,
+        target.col2 = source.col2,
+        target.last_update = source.last_update
+WHEN NOT MATCHED THEN
+    INSERT (id, col1, col2, last_update)
+    VALUES (source.id, source.col1, source.col2, source.last_update);
+
+Yes, transforming the source table data into a Common Table Expression (CTE) in SQL Server and then using it in a MERGE statement for an upsert operation is a powerful and efficient approach. You can achieve this by querying the source data and passing it to SQL Server via a staging mechanism or a direct connection (e.g., JDBC).
+
+Here’s how you can implement this:
+
+
+---
+
+Steps to Transform and Merge Using a CTE:
+
+1. Fetch Source Data: Query the source Oracle table for the records that need to be synchronized (last_update > max_last_update).
+
+
+2. Prepare the CTE in SQL Server:
+
+Use the fetched data from the source as the basis for the CTE.
+
+This can be done by:
+
+Inserting the data into a staging table in SQL Server, or
+
+Directly embedding the data in the SQL Server query.
+
+
+
+
+3. Merge the CTE with the Target Table:
+
+Use a MERGE statement to insert new records and update existing ones.
+
+
+
+
+
+---
+
+SQL Server Implementation Example:
+
+Using a Temporary Table or Staging Table
+
+1. Fetch and load the data into a temporary table:
+
+CREATE TABLE #SourceData (
+    id INT,
+    col1 NVARCHAR(255),
+    col2 NVARCHAR(255),
+    last_update DATETIME
+);
+
+-- Insert source data from Oracle into #SourceData
+-- This can be done using JDBC or a bulk insert mechanism.
+INSERT INTO #SourceData (id, col1, col2, last_update)
+VALUES
+    (1, 'Value1', 'Value2', '2024-11-20 10:00:00'),
+    (2, 'Value3', 'Value4', '2024-11-20 11:00:00');
+
+
+2. Define a CTE based on the temporary table:
+
+WITH SourceCTE AS (
+    SELECT id, col1, col2, last_update
+    FROM #SourceData
+)
+
+
+3. Merge the CTE with the target table:
+
+MERGE INTO target_table AS target
+USING SourceCTE AS source
+ON target.id = source.id
+WHEN MATCHED THEN
+    UPDATE SET 
+        target.col1 = source.col1,
+        target.col2 = source.col2,
+        target.last_update = source.last_update
+WHEN NOT MATCHED THEN
+    INSERT (id, col1, col2, last_update)
+    VALUES (source.id, source.col1, source.col2, source.last_update);
+
+
+4. Clean up:
+
+DROP TABLE #SourceData;
+
+
+
+
+---
+
+Directly Embedding Source Data in a CTE
+
+If the fetched source data is small and can be embedded directly in the SQL query:
+
+WITH SourceCTE AS (
+    SELECT *
+    FROM (VALUES
+        (1, 'Value1', 'Value2', '2024-11-20 10:00:00'),
+        (2, 'Value3', 'Value4', '2024-11-20 11:00:00')
+    ) AS SourceData (id, col1, col2, last_update)
+)
+MERGE INTO target_table AS target
+USING SourceCTE AS source
+ON target.id = source.id
+WHEN MATCHED THEN
+    UPDATE SET 
+        target.col1 = source.col1,
+        target.col2 = source.col2,
+        target.last_update = source.last_update
+WHEN NOT MATCHED THEN
+    INSERT (id, col1, col2, last_update)
+    VALUES (source.id, source.col1, source.col2, source.last_update);
+
+
+---
+
+Advantages of Using CTE with MERGE:
+
+1. Readability: The CTE structure makes your SQL query easier to understand and maintain.
+
+
+2. Performance: CTEs allow you to define reusable datasets, and MERGE ensures efficient upsert operations.
+
+
+3. Flexibility: Works well for both small datasets (direct embedding) and large datasets (via staging).
+
+
+4. Transactional Consistency: The MERGE statement is atomic, reducing the risk of partial updates.
+
+
+
+
+---
+
+Key Considerations:
+
+1. Error Handling in MERGE:
+
+Ensure proper handling of potential conflicts, e.g., duplicate keys.
+
+Wrap the MERGE statement in a transaction for rollback capability.
+
+
+
+2. Staging Table Management:
+
+Use temporary tables (#TempTable) for transient data or permanent staging tables for larger datasets.
+
+
+
+3. Performance Optimization:
+
+Index the target table and #SourceData (or equivalent) on join keys (id).
+
+For large batches, consider batching the MERGE statement itself.
+
+
+
+
+
+---
+
+Would you like help implementing this in Java, such as generating the CTE dynamically based on fetched data?
+
+
+
+To implement this in Java, you can dynamically construct and execute the SQL Server MERGE statement with a CTE based on data fetched from the Oracle source table. Here’s how you can do it:
+
+
+---
+
+Java Implementation
+
+1. Fetch Data from Oracle
+
+Fetch records from the Oracle source table using JDBC, based on the last_update column:
+
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+
+class Record {
+    int id;
+    String col1;
+    String col2;
+    Timestamp lastUpdate;
+
+    // Constructor, getters, and setters
+    public Record(int id, String col1, String col2, Timestamp lastUpdate) {
+        this.id = id;
+        this.col1 = col1;
+        this.col2 = col2;
+        this.lastUpdate = lastUpdate;
+    }
+}
+
+public List<Record> fetchSourceData(Connection oracleConnection, Timestamp lastUpdate) throws SQLException {
+    String query = "SELECT id, col1, col2, last_update FROM source_table WHERE last_update > ?";
+    List<Record> records = new ArrayList<>();
+
+    try (PreparedStatement pstmt = oracleConnection.prepareStatement(query)) {
+        pstmt.setTimestamp(1, lastUpdate);
+        try (ResultSet rs = pstmt.executeQuery()) {
+            while (rs.next()) {
+                records.add(new Record(
+                    rs.getInt("id"),
+                    rs.getString("col1"),
+                    rs.getString("col2"),
+                    rs.getTimestamp("last_update")
+                ));
+            }
+        }
+    }
+
+    return records;
+}
+
+
+---
+
+2. Dynamically Construct the CTE and Merge Query
+
+Using the fetched data, dynamically build a SQL MERGE statement with a CTE:
+
+public String generateMergeQuery(List<Record> records) {
+    StringBuilder cteBuilder = new StringBuilder("WITH SourceCTE (id, col1, col2, last_update) AS (VALUES ");
+    StringBuilder mergeBuilder = new StringBuilder();
+
+    // Build CTE dynamically
+    for (int i = 0; i < records.size(); i++) {
+        Record record = records.get(i);
+        cteBuilder.append("(")
+                  .append(record.id).append(", ")
+                  .append("'").append(record.col1.replace("'", "''")).append("', ")
+                  .append("'").append(record.col2.replace("'", "''")).append("', ")
+                  .append("'").append(record.lastUpdate).append("')");
+        if (i < records.size() - 1) {
+            cteBuilder.append(", ");
+        }
+    }
+    cteBuilder.append(")");
+
+    // Build the MERGE query
+    mergeBuilder.append(cteBuilder)
+                .append(" MERGE INTO target_table AS target ")
+                .append(" USING SourceCTE AS source ")
+                .append(" ON target.id = source.id ")
+                .append(" WHEN MATCHED THEN ")
+                .append(" UPDATE SET ")
+                .append(" target.col1 = source.col1, ")
+                .append(" target.col2 = source.col2, ")
+                .append(" target.last_update = source.last_update ")
+                .append(" WHEN NOT MATCHED THEN ")
+                .append(" INSERT (id, col1, col2, last_update) ")
+                .append(" VALUES (source.id, source.col1, source.col2, source.last_update);");
+
+    return mergeBuilder.toString();
+}
+
+
+---
+
+3. Execute the Query in SQL Server
+
+Send the dynamically generated query to SQL Server via JDBC:
+
+public void executeMergeQuery(Connection sqlServerConnection, String mergeQuery) throws SQLException {
+    try (PreparedStatement pstmt = sqlServerConnection.prepareStatement(mergeQuery)) {
+        pstmt.executeUpdate();
+    }
+}
+
+
+---
+
+4. Putting It All Together
+
+Here’s the complete workflow:
+
+import java.sql.*;
+import java.util.List;
+
+public class DataSyncUtility {
+
+    public static void main(String[] args) {
+        try (Connection oracleConnection = DriverManager.getConnection("jdbc:oracle:thin:@//host:port/service", "user", "password");
+             Connection sqlServerConnection = DriverManager.getConnection("jdbc:sqlserver://host:port;databaseName=yourDB", "user", "password")) {
+
+            // Fetch the latest update timestamp from the target table
+            Timestamp maxLastUpdate = fetchMaxLastUpdate(sqlServerConnection);
+
+            // Fetch data from Oracle
+            List<Record> sourceRecords = fetchSourceData(oracleConnection, maxLastUpdate);
+
+            if (!sourceRecords.isEmpty()) {
+                // Generate the merge query
+                String mergeQuery = generateMergeQuery(sourceRecords);
+
+                // Execute the merge query in SQL Server
+                executeMergeQuery(sqlServerConnection, mergeQuery);
+
+                System.out.println("Data synchronization complete.");
+            } else {
+                System.out.println("No new data to synchronize.");
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static Timestamp fetchMaxLastUpdate(Connection sqlServerConnection) throws SQLException {
+        String query = "SELECT MAX(last_update) FROM target_table";
+        try (PreparedStatement pstmt = sqlServerConnection.prepareStatement(query);
+             ResultSet rs = pstmt.executeQuery()) {
+            if (rs.next()) {
+                return rs.getTimestamp(1);
+            }
+        }
+        return new Timestamp(0); // Default to epoch if no records exist
+    }
+
+    // Include the fetchSourceData, generateMergeQuery, and executeMergeQuery methods here
+}
+
+
+---
+
+Considerations:
+
+1. Sanitize Inputs: Ensure that values like col1 and col2 are properly sanitized to avoid SQL injection.
+
+
+2. Batch Processing: For large datasets, divide records into batches and execute multiple merge operations.
+
+
+3. Error Handling: Wrap the operations in a transaction to ensure consistency in case of errors.
+
+
+4. Logging: Log the synchronization process for monitoring and debugging.
+
+
+
+Let me know if you need additional clarification or enhancements!
+
+
+
+Here’s how to rewrite the synchronization code using Spring Data and JdbcTemplate for cleaner and more maintainable code.
+
+
+---
+
+Spring Data/JdbcTemplate Implementation
+
+1. Configuration: Define a Spring configuration for your data sources (Oracle and SQL Server).
+
+
+2. Repository Layer: Use JdbcTemplate for interacting with the databases.
+
+
+3. Service Layer: Implement the synchronization logic with transaction management.
+
+
+4. Main Application: Orchestrate the process.
+
+
+
+
+---
+
+1. Spring Configuration
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import javax.sql.DataSource;
+
+@Configuration
+public class DataSourceConfig {
+
+    @Bean
+    public DataSource oracleDataSource() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource();
+        dataSource.setDriverClassName("oracle.jdbc.driver.OracleDriver");
+        dataSource.setUrl("jdbc:oracle:thin:@//host:port/service");
+        dataSource.setUsername("oracle_user");
+        dataSource.setPassword("oracle_password");
+        return dataSource;
+    }
+
+    @Bean
+    public DataSource sqlServerDataSource() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource();
+        dataSource.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        dataSource.setUrl("jdbc:sqlserver://host:port;databaseName=yourDB");
+        dataSource.setUsername("sqlserver_user");
+        dataSource.setPassword("sqlserver_password");
+        return dataSource;
+    }
+
+    @Bean
+    public JdbcTemplate oracleJdbcTemplate(DataSource oracleDataSource) {
+        return new JdbcTemplate(oracleDataSource);
+    }
+
+    @Bean
+    public JdbcTemplate sqlServerJdbcTemplate(DataSource sqlServerDataSource) {
+        return new JdbcTemplate(sqlServerDataSource);
+    }
+}
+
+
+---
+
+2. Repository Layer
+
+Oracle Repository:
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Timestamp;
+import java.util.List;
+
+@Repository
+public class OracleRepository {
+    private final JdbcTemplate jdbcTemplate;
+
+    public OracleRepository(JdbcTemplate oracleJdbcTemplate) {
+        this.jdbcTemplate = oracleJdbcTemplate;
+    }
+
+    public List<Record> fetchSourceData(Timestamp lastUpdate) {
+        String query = "SELECT id, col1, col2, last_update FROM source_table WHERE last_update > ?";
+        return jdbcTemplate.query(query, new Object[]{lastUpdate}, (rs, rowNum) -> 
+            new Record(
+                rs.getInt("id"),
+                rs.getString("col1"),
+                rs.getString("col2"),
+                rs.getTimestamp("last_update")
+            )
+        );
+    }
+}
+
+SQL Server Repository:
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Timestamp;
+
+@Repository
+public class SqlServerRepository {
+    private final JdbcTemplate jdbcTemplate;
+
+    public SqlServerRepository(JdbcTemplate sqlServerJdbcTemplate) {
+        this.jdbcTemplate = sqlServerJdbcTemplate;
+    }
+
+    public Timestamp fetchMaxLastUpdate() {
+        String query = "SELECT MAX(last_update) FROM target_table";
+        return jdbcTemplate.queryForObject(query, Timestamp.class);
+    }
+
+    public void executeMergeQuery(String mergeQuery) {
+        jdbcTemplate.execute(mergeQuery);
+    }
+}
+
+
+---
+
+3. Service Layer
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.sql.Timestamp;
+import java.util.List;
+
+@Service
+public class DataSyncService {
+
+    private final OracleRepository oracleRepository;
+    private final SqlServerRepository sqlServerRepository;
+
+    public DataSyncService(OracleRepository oracleRepository, SqlServerRepository sqlServerRepository) {
+        this.oracleRepository = oracleRepository;
+        this.sqlServerRepository = sqlServerRepository;
+    }
+
+    @Transactional
+    public void syncData() {
+        // Fetch max last_update from SQL Server
+        Timestamp maxLastUpdate = sqlServerRepository.fetchMaxLastUpdate();
+        if (maxLastUpdate == null) {
+            maxLastUpdate = new Timestamp(0); // Default to epoch
+        }
+
+        // Fetch source data from Oracle
+        List<Record> sourceRecords = oracleRepository.fetchSourceData(maxLastUpdate);
+
+        // Process records in chunks
+        int batchSize = 500;
+        for (int i = 0; i < sourceRecords.size(); i += batchSize) {
+            List<Record> batch = sourceRecords.subList(i, Math.min(i + batchSize, sourceRecords.size()));
+
+            // Generate the dynamic CTE and execute the MERGE statement
+            String mergeQuery = generateMergeQuery(batch);
+            sqlServerRepository.executeMergeQuery(mergeQuery);
+        }
+    }
+
+    private String generateMergeQuery(List<Record> records) {
+        StringBuilder cteBuilder = new StringBuilder("WITH SourceCTE (id, col1, col2, last_update) AS (VALUES ");
+
+        for (int i = 0; i < records.size(); i++) {
+            Record record = records.get(i);
+            cteBuilder.append("(")
+                      .append(record.getId()).append(", ")
+                      .append("'").append(record.getCol1().replace("'", "''")).append("', ")
+                      .append("'").append(record.getCol2().replace("'", "''")).append("', ")
+                      .append("'").append(record.getLastUpdate()).append("')");
+            if (i < records.size() - 1) {
+                cteBuilder.append(", ");
+            }
+        }
+        cteBuilder.append(") ");
+
+        return cteBuilder.append("""
+            MERGE INTO target_table AS target
+            USING SourceCTE AS source
+            ON target.id = source.id
+            WHEN MATCHED THEN
+                UPDATE SET 
+                    target.col1 = source.col1,
+                    target.col2 = source.col2,
+                    target.last_update = source.last_update
+            WHEN NOT MATCHED THEN
+                INSERT (id, col1, col2, last_update)
+                VALUES (source.id, source.col1, source.col2, source.last_update);
+        """).toString();
+    }
+}
+
+
+---
+
+4. Main Application
+
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class DataSyncApplication implements CommandLineRunner {
+
+    private final DataSyncService dataSyncService;
+
+    public DataSyncApplication(DataSyncService dataSyncService) {
+        this.dataSyncService = dataSyncService;
+    }
+
+    public static void main(String[] args) {
+        SpringApplication.run(DataSyncApplication.class, args);
+    }
+
+    @Override
+    public void run(String... args) {
+        dataSyncService.syncData();
+    }
+}
+
+
+---
+
+Benefits of Using Spring Data/JdbcTemplate
+
+1. Simplified Configuration and Boilerplate: JDBC setup is handled declaratively.
+
+
+2. Transaction Management: Spring ensures atomicity across chunks with @Transactional.
+
+
+3. Dependency Injection: Makes it easier to test and maintain the code.
+
+
+4. Clean Code: Separates concerns across configuration, repository, service, and main layers.
+
+
+
+Would you like me to add more features, such as logging or error handling?
+
