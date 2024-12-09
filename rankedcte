@@ -1,0 +1,21 @@
+WITH RankedTable AS (
+    SELECT
+        id,
+        priorId,
+        CASE
+            WHEN priorId IS NULL THEN 1                -- Highest priority: A, A1
+            WHEN priorId = id THEN 2                  -- Intermediate priority: B
+            ELSE 3                                    -- Lowest priority: C, D, ..., N
+        END AS priority
+    FROM
+        your_table
+)
+SELECT
+    id,
+    priorId,
+    priority,
+    RANK() OVER (ORDER BY priority, id) AS rank -- Adjusted rank with consistent ordering by id
+FROM
+    RankedTable
+ORDER BY
+    rank, id;
