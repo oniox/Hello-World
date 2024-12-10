@@ -19,3 +19,42 @@ FROM
     RankedTable
 ORDER BY
     rank, id;
+
+
+
+WITH RecursiveHierarchy AS (
+    -- Base case: Start with all records in the table
+    SELECT
+        id,
+        priorId,
+        CASE
+            WHEN priorId IS NULL THEN 1                -- Highest priority
+            WHEN priorId = id THEN 2                  -- Intermediate priority
+            ELSE 3                                    -- Lowest priority
+        END AS priority
+    FROM
+        your_table
+    UNION ALL
+    -- Recursive step: Include parents of current records
+    SELECT
+        p.id,
+        p.priorId,
+        CASE
+            WHEN p.priorId IS NULL THEN 1
+            WHEN p.priorId = p.id THEN 2
+            ELSE 3
+        END AS priority
+    FROM
+        your_table p
+    INNER JOIN RecursiveHierarchy r
+        ON p.id = r.priorId
+)
+SELECT DISTINCT
+    id,
+    priorId,
+    priority,
+    RANK() OVER (ORDER BY priority, id) AS rank
+FROM
+    RecursiveHierarchy
+ORDER BY
+    rank, id;
