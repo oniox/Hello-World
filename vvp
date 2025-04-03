@@ -1,0 +1,253 @@
+I'll update the implementation to use GitLab's `extends` keyword instead of YAML anchors and aliases. This is generally considered a more modern approach in GitLab CI:
+
+```yaml
+stages:
+  - build
+  - test
+  - publish
+  - deploy
+
+# Base template for all job deployments
+.deploy_job_template:
+  stage: deploy
+  image: curlimages/curl:latest
+  when: manual
+  only:
+    - main
+  before_script:
+    # Install jq for JSON parsing
+    - apk add --no-cache jq
+    # Construct the job name based on the job key and environment
+    - export FULL_JOB_NAME="${JOB_KEY}-${ENVIRONMENT}"
+    # Fetch the Flink job ID for this specific job
+    - |
+      echo "Fetching Flink job ID for ${FULL_JOB_NAME}..."
+      FLINK_JOB_ID=$(curl -s "${VERTICAL_FLINK_API_URL}/api/jobs/search?jobName=${FULL_JOB_NAME}" \
+        -H "Authorization: Bearer ${VERTICAL_FLINK_API_TOKEN}" \
+        -H "Content-Type: application/json" | jq -r '.jobs[0].id')
+      
+      if [ -z "$FLINK_JOB_ID" ] || [ "$FLINK_JOB_ID" = "null" ]; then
+        echo "Error: Could not find job ID for ${FULL_JOB_NAME}"
+        exit 1
+      fi
+      
+      echo "Found job ID: ${FLINK_JOB_ID}"
+      export FLINK_JOB_ID
+  script:
+    # 1. Stop the existing Flink job
+    - echo "Stopping Flink job ${FLINK_JOB_ID} (${FULL_JOB_NAME}) in ${ENVIRONMENT}..."
+    - |
+      curl -X POST "${VERTICAL_FLINK_API_URL}/api/jobs/${FLINK_JOB_ID}/stop" \
+        -H "Authorization: Bearer ${VERTICAL_FLINK_API_TOKEN}" \
+        -H "Content-Type: application/json"
+    
+    # 2. Wait for job to be fully stopped
+    - |
+      echo "Waiting for Flink job to stop completely..."
+      while true; do
+        STATUS=$(curl -s "${VERTICAL_FLINK_API_URL}/api/jobs/${FLINK_JOB_ID}/status" \
+          -H "Authorization: Bearer ${VERTICAL_FLINK_API_TOKEN}" | jq -r '.status')
+        if [ "$STATUS" = "STOPPED" ]; then
+          echo "Job stopped successfully."
+          break
+        fi
+        echo "Current status: $STATUS. Waiting..."
+        sleep 10
+      done
+    
+    # 3. Deploy new artifact using vertical flink API
+    - echo "Deploying new artifact for ${FULL_JOB_NAME} from Nexus to ${ENVIRONMENT}..."
+    - |
+      # If different jobs use different artifacts, you might need to construct the artifact path dynamically
+      ARTIFACT_PATH="${GROUP_ID}/${ARTIFACT_ID}-${JOB_KEY}/${VERSION}/${ARTIFACT_ID}-${JOB_KEY}-${VERSION}.jar"
+      
+      # Job-specific configuration (could be moved to variables)
+      JOB_CONFIG=$(cat <<EOF
+      {
+        "parallelism": ${PARALLELISM},
+        "taskSlots": ${TASK_SLOTS},
+        "jobSpecificParam1": "${JOB_SPECIFIC_PARAM1}",
+        "jobSpecificParam2": "${JOB_SPECIFIC_PARAM2}"
+      }
+      EOF
+      )
+      
+      curl -X POST "${VERTICAL_FLINK_API_URL}/api/jobs/${FLINK_JOB_ID}/deploy" \
+        -H "Authorization: Bearer ${VERTICAL_FLINK_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "artifactUrl": "'"${NEXUS_URL}/repository/maven-releases/${ARTIFACT_PATH}"'",
+          "environment": "'"${ENVIRONMENT}"'",
+          "jobConfig": '"${JOB_CONFIG}"'
+        }'
+    
+    # 4. Start the Flink job
+    - echo "Starting Flink job ${FULL_JOB_NAME} in ${ENVIRONMENT}..."
+    - |
+      curl -X POST "${VERTICAL_FLINK_API_URL}/api/jobs/${FLINK_JOB_ID}/start" \
+        -H "Authorization: Bearer ${VERTICAL_FLINK_API_TOKEN}" \
+        -H "Content-Type: application/json"
+    
+    # 5. Verify job is running
+    - |
+      echo "Verifying job status..."
+      RETRY_COUNT=0
+      MAX_RETRIES=10
+      while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        STATUS=$(curl -s "${VERTICAL_FLINK_API_URL}/api/jobs/${FLINK_JOB_ID}/status" \
+          -H "Authorization: Bearer ${VERTICAL_FLINK_API_TOKEN}" | jq -r '.status')
+        if [ "$STATUS" = "RUNNING" ]; then
+          echo "Job ${FULL_JOB_NAME} started successfully in ${ENVIRONMENT}!"
+          exit 0
+        fi
+        RETRY_COUNT=$((RETRY_COUNT+1))
+        echo "Current status: $STATUS. Waiting... (Attempt $RETRY_COUNT/$MAX_RETRIES)"
+        sleep 15
+      done
+      echo "Failed to start job ${FULL_JOB_NAME} in ${ENVIRONMENT} after $MAX_RETRIES attempts. Last status: $STATUS"
+      exit 1
+
+# Environment-specific templates
+.deploy_dev_template:
+  extends: .deploy_job_template
+  variables:
+    ENVIRONMENT: "dev"
+    VERTICAL_FLINK_API_URL: ${DEV_VERTICAL_FLINK_API_URL}
+    VERTICAL_FLINK_API_TOKEN: ${DEV_VERTICAL_FLINK_API_TOKEN}
+    PARALLELISM: "2"
+    TASK_SLOTS: "2"
+    NEXUS_URL: ${NEXUS_URL}
+  rules:
+    - if: '$DEPLOY_TO_DEV == "true"'
+      when: manual
+    - when: never
+
+.deploy_qa_template:
+  extends: .deploy_job_template
+  variables:
+    ENVIRONMENT: "qa"
+    VERTICAL_FLINK_API_URL: ${QA_VERTICAL_FLINK_API_URL}
+    VERTICAL_FLINK_API_TOKEN: ${QA_VERTICAL_FLINK_API_TOKEN}
+    PARALLELISM: "3"
+    TASK_SLOTS: "3"
+    NEXUS_URL: ${NEXUS_URL}
+  rules:
+    - if: '$DEPLOY_TO_QA == "true"'
+      when: manual
+    - when: never
+
+.deploy_prod_template:
+  extends: .deploy_job_template
+  variables:
+    ENVIRONMENT: "prod"
+    VERTICAL_FLINK_API_URL: ${PROD_VERTICAL_FLINK_API_URL}
+    VERTICAL_FLINK_API_TOKEN: ${PROD_VERTICAL_FLINK_API_TOKEN}
+    PARALLELISM: "4"
+    TASK_SLOTS: "4"
+    NEXUS_URL: ${NEXUS_URL}
+  rules:
+    - if: '$DEPLOY_TO_PROD == "true"'
+      when: manual
+    - when: never
+
+# Job A deployments
+deploy_job_a_dev:
+  extends: .deploy_dev_template
+  variables:
+    JOB_KEY: "job-a"
+    JOB_SPECIFIC_PARAM1: "value1-dev"
+    JOB_SPECIFIC_PARAM2: "value2-dev"
+  environment:
+    name: dev-job-a
+
+deploy_job_a_qa:
+  extends: .deploy_qa_template
+  variables:
+    JOB_KEY: "job-a"
+    JOB_SPECIFIC_PARAM1: "value1-qa"
+    JOB_SPECIFIC_PARAM2: "value2-qa"
+  environment:
+    name: qa-job-a
+
+deploy_job_a_prod:
+  extends: .deploy_prod_template
+  variables:
+    JOB_KEY: "job-a"
+    JOB_SPECIFIC_PARAM1: "value1-prod"
+    JOB_SPECIFIC_PARAM2: "value2-prod"
+  environment:
+    name: prod-job-a
+
+# Job B deployments
+deploy_job_b_dev:
+  extends: .deploy_dev_template
+  variables:
+    JOB_KEY: "job-b"
+    JOB_SPECIFIC_PARAM1: "value1-dev"
+    JOB_SPECIFIC_PARAM2: "value2-dev"
+  environment:
+    name: dev-job-b
+
+deploy_job_b_qa:
+  extends: .deploy_qa_template
+  variables:
+    JOB_KEY: "job-b"
+    JOB_SPECIFIC_PARAM1: "value1-qa"
+    JOB_SPECIFIC_PARAM2: "value2-qa"
+  environment:
+    name: qa-job-b
+
+deploy_job_b_prod:
+  extends: .deploy_prod_template
+  variables:
+    JOB_KEY: "job-b"
+    JOB_SPECIFIC_PARAM1: "value1-prod"
+    JOB_SPECIFIC_PARAM2: "value2-prod"
+  environment:
+    name: prod-job-b
+
+# Job C deployments
+deploy_job_c_dev:
+  extends: .deploy_dev_template
+  variables:
+    JOB_KEY: "job-c"
+    JOB_SPECIFIC_PARAM1: "value1-dev"
+    JOB_SPECIFIC_PARAM2: "value2-dev"
+  environment:
+    name: dev-job-c
+
+deploy_job_c_qa:
+  extends: .deploy_qa_template
+  variables:
+    JOB_KEY: "job-c"
+    JOB_SPECIFIC_PARAM1: "value1-qa"
+    JOB_SPECIFIC_PARAM2: "value2-qa"
+  environment:
+    name: qa-job-c
+
+deploy_job_c_prod:
+  extends: .deploy_prod_template
+  variables:
+    JOB_KEY: "job-c"
+    JOB_SPECIFIC_PARAM1: "value1-prod"
+    JOB_SPECIFIC_PARAM2: "value2-prod"
+  environment:
+    name: prod-job-c
+```
+
+The key changes are:
+
+1. Replaced YAML anchors (`&deploy_job_template`) and aliases (`<<: *deploy_job_template`) with GitLab's native `extends` keyword.
+
+2. The structure remains the same, with three levels of inheritance:
+   - Base job template (`.deploy_job_template`)
+   - Environment-specific templates (`.deploy_dev_template`, etc.)
+   - Concrete job deployments for each job in each environment
+
+Using `extends` provides a few advantages:
+- It's more intuitive and aligns with GitLab's recommended practices
+- It offers better IDE support in most editors
+- It's generally considered more maintainable for complex configurations
+- Some advanced CI/CD features work better with `extends` than with YAML anchors
+
+The functionality remains exactly the same as before, with each job being individually deployable and environment selection controlled by checkboxes.
