@@ -1,7 +1,7 @@
 Requirement
-I need to update my current gitlab ci/cd pipeline to add an optional deploy stage. This stage will deploy artifact (java jar)  as built and uploaded to Nexus repo to a Kubernetes based Veverica flink job. Multiple jobs can be deployed per environment. The job names are of the format  job-a-env, job-b-env. Assume there are at least 3 such jobs per environment. Consider that the id of a job is dynamic hence needs to be fetched via API for each execution (the look up key will be the job name e.g job-a-env) 
+I need to update my current gitlab ci/cd pipeline to add an optional deploy stage. This stage will deploy artifact (java jar)  as built and uploaded to Nexus repo to a Kubernetes based Veverica flink job. Multiple jobs can be deployed per environment. The job names are of the format  job-a-env, job-b-env. Assume there are at least 3 such jobs per environment. Consider that the id of a job is dynamic hence needs to be fetched via API for each execution (the look up key will be the job name e.g job-a-dev) 
 
 Implementation 
-The flink job will be suspended using veverica api, then latest artifact created as part of the current pipeline deployed then job started / restored using the veverica api. Consider using extends keyword in gitlab yaml instead of the generic yaml notation. 
+The selected flink job e.g job-a-dev will be suspended (if already running) using veverica api, then the latest artifact which was built as part of the current pipeline deployed to it, following which the job started / restored using the veverica api. Consider using extends keyword in gitlab yaml instead of the generic yaml notation. 
 
 How do I go about implementing this ?
