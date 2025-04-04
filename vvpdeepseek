@@ -1,0 +1,131 @@
+Here's the updated version with **verified state transitions**, including explicit checks for the transition to `RUNNING` state:
+
+```yaml
+variables:
+  VERVERICA_API: "http://localhost/vvp"
+  VERVERICA_NAMESPACE: "default"
+  SUSPEND_TIMEOUT: 120
+  SUSPEND_POLL_INTERVAL: 5
+  STARTUP_TIMEOUT: 180  # Added for running state verification
+  STARTUP_POLL_INTERVAL: 10  # Added for running state verification
+
+.deploy_flink_template: &deploy_flink_template
+  stage: deploy
+  image: appropriate/curl-jq-image
+  script:
+    - |
+      # Function to check job state with retries
+      get_job_state() {
+        curl -sSf -X GET "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+          -H "Authorization: Bearer $VERVERICA_TOKEN" \
+          -H "Accept: application/json" | jq -r '.spec.state'
+      }
+
+      # Function to wait for target state
+      wait_for_state() {
+        local TARGET_STATE=$1
+        local TIMEOUT=$2
+        local POLL_INTERVAL=$3
+        
+        echo "Waiting for state: $TARGET_STATE (timeout: $TIMEOUT seconds)"
+        START_TIME=$(date +%s)
+        while : ; do
+          CURRENT_STATE=$(get_job_state)
+          [ "$CURRENT_STATE" = "$TARGET_STATE" ] && break
+          
+          ELAPSED=$(( $(date +%s) - $START_TIME ))
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "Timeout reached! Current state: $CURRENT_STATE"
+            exit 1
+          fi
+          echo "Current state: $CURRENT_STATE (waiting $POLL_INTERVAL seconds...)"
+          sleep $POLL_INTERVAL
+        done
+        echo "Successfully reached state: $TARGET_STATE"
+      }
+
+      # 1. Get deployment ID
+      DEPLOYMENT_ID=$(curl -sSf -X GET "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments?name=$VERVERICA_DEPLOYMENT_NAME" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" | jq -r '.items[0].id')
+
+      # 2. Check initial state
+      INITIAL_STATE=$(get_job_state)
+      echo "Initial job state: $INITIAL_STATE"
+
+      # 3. Suspend if running
+      if [ "$INITIAL_STATE" = "RUNNING" ]; then
+        echo "Suspending job..."
+        curl -X PATCH "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+          -H "Authorization: Bearer $VERVERICA_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{"spec": {"state": "SUSPENDED"}}'
+        
+        wait_for_state "SUSPENDED" $SUSPEND_TIMEOUT $SUSPEND_POLL_INTERVAL
+      fi
+
+      # 4. Update JAR
+      echo "Updating artifact: $NEXUS_ARTIFACT_URL"
+      curl -X PATCH "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"spec": {"template": {"spec": {"artifact": {"jarUri": "'"$NEXUS_ARTIFACT_URL"'"}}}}}'
+
+      # 5. Start job and verify
+      echo "Starting deployment..."
+      curl -X PATCH "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"spec": {"state": "RUNNING"}}'
+
+      wait_for_state "RUNNING" $STARTUP_TIMEOUT $STARTUP_POLL_INTERVAL
+
+      # 6. Final health check
+      echo "Verifying job health..."
+      curl -sSf -X GET "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" | jq '.status | "Job status: \(.state), Last change: \(.lastModifiedAt)"'
+```
+
+### Key Improvements:
+
+1. **New Timeout Variables**:
+   ```yaml
+   STARTUP_TIMEOUT: 180  # Longer timeout for startup
+   STARTUP_POLL_INTERVAL: 10
+   ```
+
+2. **Reusable State Verification**:
+   ```bash
+   wait_for_state() {
+     # Generic function to wait for any target state
+     # (Used for both SUSPENDED and RUNNING states)
+   }
+   ```
+
+3. **Enhanced Error Handling**:
+   - Added `-S` (show errors) and `-f` (fail on HTTP errors) to curl commands
+   - Explicit timeout messages with current state
+
+4. **Final Health Check**:
+   ```bash
+   # Shows detailed status after deployment
+   jq '.status | "Job status: \(.state), Last change: \(.lastModifiedAt)"'
+   ```
+
+5. **State Transition Flow**:
+   ```
+   Initial state → (Suspend if needed) → Update JAR → Start → Verify RUNNING
+   ```
+
+### Usage Notes:
+1. The `wait_for_state` function ensures:
+   - The job fully suspends before JAR update
+   - The job fully starts before pipeline completion
+   - Fails fast if timeouts are exceeded
+
+2. Adjust timeouts based on:
+   - Your typical job suspension/startup times
+   - Cluster resources (larger jobs may need longer timeouts)
+
+3. For production:
+   - Set longer timeouts via CI/CD variables
+   - Consider adding retry logic for transient failures
