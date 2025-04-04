@@ -129,3 +129,30 @@ variables:
 3. For production:
    - Set longer timeouts via CI/CD variables
    - Consider adding retry logic for transient failures
+
+variables:
+  DEPLOY_ENV: "dev"  # Default lowest environment
+  ALLOWED_ENVIRONMENTS: "dev uat qa qaprim nfr"  # Central definition
+
+.deploy_flink_template: &deploy_flink_template
+  stage: deploy
+  before_script:
+    - |
+      # Single validation point
+      if ! grep -qw "$DEPLOY_ENV" <<< "$ALLOWED_ENVIRONMENTS"; then
+        echo "❌ Invalid DEPLOY_ENV: '$DEPLOY_ENV'. Must be one of: $ALLOWED_ENVIRONMENTS"
+        exit 1
+      fi
+  rules:
+    - if: '$DEPLOY_ENV =~ /^(dev|uat|qa|qaprim|nfr)$/'  # Combined check
+      when: manual
+    - when: never  # Catch-all for invalid/null
+
+deploy-job-a:
+  extends: .deploy_flink_template
+  variables:
+    VERVERICA_DEPLOYMENT_NAME: "job-a-$DEPLOY_ENV"
+  rules:
+    - if: '$DEPLOY_JOB_A == "true"'  # Only needs job-specific condition
+      when: manual  # Inherits environment validation from template
+    - when: never
