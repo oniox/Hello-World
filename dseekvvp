@@ -113,3 +113,114 @@ To deploy:
 5. **Variables**: Adjust the Nexus URL format according to your actual repository structure.
 
 This implementation gives you flexible, optional deployment of multiple Flink jobs to different environments with manual control over which jobs get deployed.
+
+
+Excellent point! Verifying that the suspension is fully completed before proceeding with the JAR update is a **critical improvement** for reliability. Here's how to implement this robust check in your GitLab CI/CD pipeline:
+
+### Enhanced Implementation with Suspension Verification
+
+```yaml
+.deploy_flink_template: &deploy_flink_template
+  stage: deploy
+  image: appropriate/curl-jq-image
+  variables:
+    SUSPEND_TIMEOUT: 120  # Max seconds to wait for suspension
+    SUSPEND_POLL_INTERVAL: 5  # Seconds between checks
+  script:
+    - |
+      # Function to check job state
+      get_job_state() {
+        curl -s -X GET "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+          -H "Authorization: Bearer $VERVERICA_TOKEN" | jq -r '.spec.state'
+      }
+
+      # 1. Get deployment ID (existing code)
+      DEPLOYMENT_ID=$(curl -s -X GET "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments?name=$VERVERICA_DEPLOYMENT_NAME" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" | jq -r '.items[0].id')
+
+      # 2. Check current state
+      CURRENT_STATE=$(get_job_state)
+      echo "Current job state: $CURRENT_STATE"
+
+      # 3. Only suspend if running
+      if [ "$CURRENT_STATE" = "RUNNING" ]; then
+        echo "Suspending job..."
+        curl -X PATCH "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+          -H "Authorization: Bearer $VERVERICA_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{"spec": {"state": "SUSPENDED"}}'
+
+        # 4. Wait for suspension to complete
+        echo "Waiting for job to suspend (timeout: $SUSPEND_TIMEOUT seconds)..."
+        START_TIME=$(date +%s)
+        while : ; do
+          CURRENT_STATE=$(get_job_state)
+          [ "$CURRENT_STATE" = "SUSPENDED" ] && break
+          
+          ELAPSED=$(( $(date +%s) - $START_TIME ))
+          if [ $ELAPSED -ge $SUSPEND_TIMEOUT ]; then
+            echo "Timeout reached while waiting for suspension!"
+            exit 1
+          fi
+          
+          echo "Current state: $CURRENT_STATE (waiting $SUSPEND_POLL_INTERVAL more seconds...)"
+          sleep $SUSPEND_POLL_INTERVAL
+        done
+        echo "Job successfully suspended"
+      else
+        echo "Job already suspended (state: $CURRENT_STATE)"
+      fi
+
+      # 5. Proceed with JAR update (existing code)
+      echo "Updating JAR..."
+      curl -X PATCH "$VERVERICA_API/..." -d '{"spec": {"template": {"spec": {"artifact": {"jarUri": "'"$NEXUS_ARTIFACT_URL"'"}}}}}'
+
+      # 6. Restart job (existing code)
+      echo "Restarting job..."
+      curl -X PATCH "$VERVERICA_API/..." -d '{"spec": {"state": "RUNNING"}}'
+```
+
+### Key Improvements:
+
+1. **State Verification Function**:
+   - Created `get_job_state()` function to avoid code duplication
+
+2. **Pre-Suspend Check**:
+   - Only attempts suspension if job is actually running
+
+3. **Active Waiting Loop**:
+   - Polls job state until either:
+     - `SUSPENDED` state is confirmed
+     - Timeout is reached (fails the pipeline)
+
+4. **Progress Feedback**:
+   - Logs current state during waiting period
+   - Clear timeout warnings
+
+5. **Configurable Timing**:
+   - `SUSPEND_TIMEOUT`: Adjust based on your typical job suspension times
+   - `SUSPEND_POLL_INTERVAL`: Balance between responsiveness and API load
+
+### Additional Recommendations:
+
+1. **Add State Transition Validation**:
+   ```bash
+   if [[ ! "$CURRENT_STATE" =~ ^(SUSPENDED|FAILED|FINISHED)$ ]]; then
+     echo "Unexpected state after suspension attempt: $CURRENT_STATE"
+     exit 1
+   fi
+   ```
+
+2. **Consider Adding Rollback**:
+   - If JAR update fails, consider reverting to previous state
+
+3. **Log the Full Transition**:
+   ```bash
+   echo "State transition: $INITIAL_STATE → SUSPENDED → RUNNING"
+   ```
+
+This implementation ensures your pipeline:
+- Won't proceed with JAR updates until suspension is confirmed
+- Fails fast if suspension doesn't complete
+- Provides clear visibility into the deployment process
+- Handles edge cases properly
