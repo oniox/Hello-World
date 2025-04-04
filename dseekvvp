@@ -1,0 +1,115 @@
+# Implementing Optional Flink Job Deployment in GitLab CI/CD
+
+Here's how you can implement an optional deploy stage in your GitLab CI/CD pipeline to deploy Java JAR artifacts to Ververica Flink jobs on Kubernetes:
+
+## 1. First, create a template for the deployment logic
+
+```yaml
+.deploy_flink_template: &deploy_flink_template
+  stage: deploy
+  image: appropriate/curl-jq-image # Image with curl and jq for API calls
+  variables:
+    VERVERICA_API: "https://your-ververica-api-url"
+    VERVERICA_NAMESPACE: "your-namespace"
+    VERVERICA_DEPLOYMENT_NAME: "" # To be overridden
+    NEXUS_ARTIFACT_URL: "" # To be overridden
+  script:
+    - |
+      # Get deployment ID
+      DEPLOYMENT_ID=$(curl -s -X GET "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments?name=$VERVERICA_DEPLOYMENT_NAME" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" \
+        -H "Accept: application/json" | jq -r '.items[0].id')
+      
+      if [ -z "$DEPLOYMENT_ID" ] || [ "$DEPLOYMENT_ID" = "null" ]; then
+        echo "Error: Could not find deployment $VERVERICA_DEPLOYMENT_NAME"
+        exit 1
+      fi
+      
+      # Suspend the job
+      echo "Suspending deployment $VERVERICA_DEPLOYMENT_NAME (ID: $DEPLOYMENT_ID)"
+      curl -X PATCH "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"spec": {"state": "SUSPENDED"}}'
+      
+      # Update the JAR
+      echo "Updating JAR for $VERVERICA_DEPLOYMENT_NAME"
+      curl -X PATCH "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"spec": {"template": {"spec": {"artifact": {"jarUri": "'"$NEXUS_ARTIFACT_URL"'"}}}}}'
+      
+      # Restart the job
+      echo "Restarting deployment $VERVERICA_DEPLOYMENT_NAME"
+      curl -X PATCH "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$DEPLOYMENT_ID" \
+        -H "Authorization: Bearer $VERVERICA_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"spec": {"state": "RUNNING"}}'
+  rules:
+    - if: '$DEPLOY_ENV == null'
+      when: never
+    - if: '$DEPLOY_ENV == "staging" || $DEPLOY_ENV == "production"'
+      when: manual
+```
+
+## 2. Define your concrete deployment jobs using `extends`
+
+```yaml
+deploy-job-a:
+  extends: .deploy_flink_template
+  variables:
+    VERVERICA_DEPLOYMENT_NAME: "job-a-$DEPLOY_ENV"
+    NEXUS_ARTIFACT_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/maven/$ARTIFACT_PATH/job-a-$CI_COMMIT_SHORT_SHA.jar"
+  rules:
+    - if: '$DEPLOY_JOB_A == "true" && ($DEPLOY_ENV == "staging" || $DEPLOY_ENV == "production")'
+      when: manual
+    - when: never
+
+deploy-job-b:
+  extends: .deploy_flink_template
+  variables:
+    VERVERICA_DEPLOYMENT_NAME: "job-b-$DEPLOY_ENV"
+    NEXUS_ARTIFACT_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/maven/$ARTIFACT_PATH/job-b-$CI_COMMIT_SHORT_SHA.jar"
+  rules:
+    - if: '$DEPLOY_JOB_B == "true" && ($DEPLOY_ENV == "staging" || $DEPLOY_ENV == "production")'
+      when: manual
+    - when: never
+
+deploy-job-c:
+  extends: .deploy_flink_template
+  variables:
+    VERVERICA_DEPLOYMENT_NAME: "job-c-$DEPLOY_ENV"
+    NEXUS_ARTIFACT_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/maven/$ARTIFACT_PATH/job-c-$CI_COMMIT_SHORT_SHA.jar"
+  rules:
+    - if: '$DEPLOY_JOB_C == "true" && ($DEPLOY_ENV == "staging" || $DEPLOY_ENV == "production")'
+      when: manual
+    - when: never
+```
+
+## 3. Set up your pipeline variables
+
+1. Add these secret variables in GitLab CI/CD settings:
+   - `VERVERICA_TOKEN` - API token for Ververica
+   - `NEXUS_CREDENTIALS` - Credentials for Nexus if needed
+
+2. Use these variables to trigger deployments:
+   - `DEPLOY_ENV` - Set to "staging" or "production" to enable deployment
+   - `DEPLOY_JOB_A`, `DEPLOY_JOB_B`, `DEPLOY_JOB_C` - Set to "true" to enable specific jobs
+
+## 4. Usage
+
+To deploy:
+1. Run the pipeline normally (build and upload artifacts)
+2. When you want to deploy, manually run the pipeline with variables:
+   - `DEPLOY_ENV=staging` (or `production`)
+   - `DEPLOY_JOB_A=true` (and/or others you want to deploy)
+
+## Additional Considerations
+
+1. **Error Handling**: You might want to add more robust error handling and verification steps.
+2. **Parallel Deployment**: If jobs can be deployed in parallel, add `needs: []` to avoid sequential execution.
+3. **Verification**: Add a step to verify the deployment was successful.
+4. **Rollback**: Consider adding a rollback mechanism in case of deployment failure.
+5. **Variables**: Adjust the Nexus URL format according to your actual repository structure.
+
+This implementation gives you flexible, optional deployment of multiple Flink jobs to different environments with manual control over which jobs get deployed.
