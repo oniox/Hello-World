@@ -1,0 +1,141 @@
+variables:
+  # Environment Configuration
+  DEPLOY_ENV: "dev"
+  ALLOWED_ENVIRONMENTS: "dev uat qa qaprim nfr"
+  JOB_LIST: "job-a job-b job-c"
+  
+  # Safety Controls
+  SKIP_MISSING_JOBS: "true"
+  SUSPEND_TIMEOUT: 120
+  STARTUP_TIMEOUT: 180
+  VERVERICA_API: "http://ververica-api.example.com"
+  VERVERICA_NAMESPACE: "default"
+
+  # Artifact Configuration
+  NEXUS_BASE_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/maven"
+
+# Reusable Deployment Logic
+.deploy_job_template: &deploy_job_template
+  stage: deploy
+  image: appropriate/curl-jq-image
+  interruptible: true
+  rules:
+    - if: '$DEPLOY_ENV =~ /^(dev|uat|qa|qaprim|nfr)$/'
+      when: manual
+  before_script:
+    - |
+      [ -z "$VERVERICA_TOKEN" ] && { echo "❌ VERVERICA_TOKEN not set"; exit 1; }
+      echo "📦 Deploying to ${DEPLOY_ENV} (Job: ${JOB_NAME})"
+  script:
+    - |
+      # Main deployment function
+      deploy_job() {
+        local full_job_name="${JOB_NAME}-${DEPLOY_ENV}"
+        
+        # 1. Verify job existence
+        local response=$(curl -sSf -H "Authorization: Bearer $VERVERICA_TOKEN" \
+          "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments?name=${full_job_name}")
+        
+        if [ $(echo "$response" | jq '.items | length') -eq 0 ]; then
+          [ "$SKIP_MISSING_JOBS" = "true" ] && return 0
+          exit 1
+        fi
+
+        local deployment_id=$(echo "$response" | jq -r '.items[0].id')
+        local current_state=$(echo "$response" | jq -r '.items[0].spec.state')
+
+        # 2. State transition logic
+        case "$current_state" in
+          "RUNNING")
+            suspend_job "$deployment_id"
+            ;;
+          "SUSPENDED")
+            echo "ℹ️  Job already suspended"
+            ;;
+          *)
+            echo "⚠️  Unexpected state: $current_state"
+            [ "$SKIP_MISSING_JOBS" = "true" ] && return 0
+            exit 1
+            ;;
+        esac
+
+        # 3. Update artifact
+        update_artifact "$deployment_id"
+
+        # 4. Restart job
+        start_job "$deployment_id"
+      }
+
+      # Helper functions
+      suspend_job() {
+        echo "⏸  Suspending job..."
+        curl -X PATCH \
+          -H "Authorization: Bearer $VERVERICA_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{"spec": {"state": "SUSPENDED"}}' \
+          "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$1"
+        wait_for_state "SUSPENDED" "$1" "$SUSPEND_TIMEOUT"
+      }
+
+      update_artifact() {
+        echo "🔄 Updating artifact..."
+        curl -X PATCH \
+          -H "Authorization: Bearer $VERVERICA_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{"spec": {"template": {"spec": {"artifact": {"jarUri": "'"${NEXUS_BASE_URL}/${JOB_NAME}/${CI_COMMIT_SHORT_SHA}/${JOB_NAME}-${CI_COMMIT_SHORT_SHA}.jar"'"}}}}}' \
+          "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$1"
+      }
+
+      start_job() {
+        echo "▶️  Starting job..."
+        curl -X PATCH \
+          -H "Authorization: Bearer $VERVERICA_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{"spec": {"state": "RUNNING"}}' \
+          "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$1"
+        wait_for_state "RUNNING" "$1" "$STARTUP_TIMEOUT"
+      }
+
+      wait_for_state() {
+        local target_state=$1
+        local deployment_id=$2
+        local timeout=$3
+        local start_time=$(date +%s)
+
+        echo "⏳ Waiting for state: $target_state (timeout: ${timeout}s)"
+        while : ; do
+          local current_state=$(curl -sS -H "Authorization: Bearer $VERVERICA_TOKEN" \
+            "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments/$deployment_id" | 
+            jq -r '.spec.state')
+
+          [ "$current_state" = "$target_state" ] && break
+          [ $(($(date +%s) - start_time)) -ge $timeout ] && { echo "⏰ Timeout reached"; exit 1; }
+          sleep 5
+        done
+        echo "✅ Reached state: $target_state"
+      }
+
+      # Execute deployment
+      deploy_job
+  artifacts:
+    reports:
+      dotenv: deployment_report.env
+
+# Parallel Job Execution
+deploy-all-jobs:
+  parallel:
+    matrix:
+      - JOB_NAME: $JOB_LIST
+  extends: .deploy_job_template
+  rules:
+    - if: '$DEPLOY_ALL_JOBS == "true"'
+      when: manual
+
+# Individual Job Triggers (Optional)
+deploy-job-a:
+  variables:
+    JOB_NAME: "job-a"
+  extends: .deploy_job_template
+  rules:
+    - if: '$DEPLOY_JOB_A == "true"'
+      when: manual
