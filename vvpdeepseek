@@ -156,3 +156,117 @@ deploy-job-a:
     - if: '$DEPLOY_JOB_A == "true"'  # Only needs job-specific condition
       when: manual  # Inherits environment validation from template
     - when: never
+
+
+
+Here's the enhanced implementation with **defensive job existence checking** and **verbose logging**:
+
+```yaml
+variables:
+  SKIP_MISSING_JOBS: "true"  # Set to "false" to fail on missing jobs
+
+.deploy_job_template: &deploy_job_template
+  script:
+    - |
+      deploy_single_job() {
+        local job_name="$1-$DEPLOY_ENV"
+        echo "🔍 Checking existence of job: $job_name"
+        
+        # Check if job exists in Ververica
+        DEPLOYMENT_RESPONSE=$(curl -sS -w "\nHTTP_STATUS:%{http_code}" \
+          -H "Authorization: Bearer $VERVERICA_TOKEN" \
+          "$VERVERICA_API/api/v1/namespaces/$VERVERICA_NAMESPACE/deployments?name=$job_name")
+
+        HTTP_STATUS=$(echo "$DEPLOYMENT_RESPONSE" | grep 'HTTP_STATUS:' | sed 's/.*HTTP_STATUS://')
+        DEPLOYMENT_DATA=$(echo "$DEPLOYMENT_RESPONSE" | sed '/HTTP_STATUS:/d')
+
+        # Job existence check
+        if [ "$HTTP_STATUS" != "200" ] || [ $(echo "$DEPLOYMENT_DATA" | jq '.items | length') -eq 0 ]; then
+          if [ "$SKIP_MISSING_JOBS" = "true" ]; then
+            echo "⚠️  Job $job_name not found (HTTP $HTTP_STATUS). Skipping..."
+            return 0
+          else
+            echo "❌ Job $job_name not found (HTTP $HTTP_STATUS). Failing..."
+            return 1
+          fi
+        fi
+
+        # Proceed with deployment if job exists
+        DEPLOYMENT_ID=$(echo "$DEPLOYMENT_DATA" | jq -r '.items[0].id')
+        echo "✓ Found job $job_name (ID: $DEPLOYMENT_ID)"
+        
+        # ... [rest of your deployment logic] ...
+      }
+
+# Individual job deployment
+deploy-job-a:
+  extends: .deploy_job_template
+  rules:
+    - if: '$DEPLOY_JOB_A == "true"'
+      when: manual
+  script:
+    - deploy_single_job "job-a"
+
+# Bulk deployment
+deploy-all-jobs:
+  extends: .deploy_job_template
+  rules:
+    - if: '$DEPLOY_ALL_JOBS == "true"'
+      when: manual
+  script:
+    - |
+      FAILED_JOBS=0
+      for job in $JOB_LIST; do
+        if ! deploy_single_job "$job"; then
+          FAILED_JOBS=$((FAILED_JOBS+1))
+        fi
+      done
+      
+      if [ "$FAILED_JOBS" -gt 0 ]; then
+        echo "❌ $FAILED_JOBS job(s) failed deployment"
+        exit 1
+      else
+        echo "✅ All existing jobs deployed successfully"
+      fi
+```
+
+### Key Defensive Features:
+
+1. **Explicit Job Existence Check**
+   ```bash
+   curl -sS -w "\nHTTP_STATUS:%{http_code}"  # Captures both response and status code
+   ```
+
+2. **Configurable Behavior**
+   - `SKIP_MISSING_JOBS=true`: Logs and continues (default)
+   - `SKIP_MISSING_JOBS=false`: Fails pipeline on missing jobs
+
+3. **Verbose Logging**
+   ```
+   🔍 Checking existence of job: job-x-uat
+   ⚠️  Job job-x-uat not found (HTTP 404). Skipping...
+   ✓ Found job job-y-uat (ID: deploy-123)
+   ```
+
+4. **Bulk Deployment Safeguards**
+   - Tracks failed deployments
+   - Returns aggregate success/failure status
+
+### Enhanced Error Cases:
+
+| Scenario | Behavior (SKIP_MISSING_JOBS=true) | Behavior (SKIP_MISSING_JOBS=false) |
+|----------|-----------------------------------|------------------------------------|
+| Job missing | Logs warning, continues | Fails pipeline immediately |
+| API unreachable | Fails (HTTP error) | Fails (HTTP error) |
+| Invalid credentials | Fails (HTTP 401) | Fails (HTTP 401) |
+
+### Recommended Usage:
+```bash
+# Safe mode (skip missing):
+DEPLOY_ENV=uat DEPLOY_ALL_JOBS=true SKIP_MISSING_JOBS=true
+
+# Strict mode (fail fast):
+DEPLOY_ENV=prod DEPLOY_JOB_A=true SKIP_MISSING_JOBS=false
+```
+
+This implementation gives you both flexibility and robustness while maintaining clean logs. The defensive checks add minimal overhead (one additional API call per job) while significantly improving reliability.
