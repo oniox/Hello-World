@@ -1,0 +1,136 @@
+To ensure proper dependency resolution when multiple jobs need a secret fetched by `use-token`, you need to carefully structure your pipeline stages and job dependencies. Here's how to set it up:
+
+### Pipeline Structure with Proper Dependencies
+
+```yaml
+stages:
+  - prepare      # Stage for fetching secrets from child project
+  - process      # Stage for the initial job using the secret
+  - deploy       # Stage for subsequent jobs needing the secret
+
+# Include child project that provides the secret token
+include:
+  - project: 'your-group/child-project'
+    ref: main
+    file: '.gitlab-ci.yml'
+
+# Job that initially fetches and uses the token
+use-token:
+  stage: process
+  needs:
+    - project: 'your-group/child-project'
+      job: export-token
+      artifacts: true
+  script:
+    # The token is available as $EXPORTED_SECRET_TOKEN from dotenv artifact
+    - curl -H "Authorization: Bearer $EXPORTED_SECRET_TOKEN" https://your-api.com/endpoint
+    # Store the token for downstream jobs (optional if using dotenv artifacts)
+    - echo "SECRET_TOKEN=$EXPORTED_SECRET_TOKEN" >> build.env
+  artifacts:
+    reports:
+      dotenv: build.env
+    expire_in: 30 minutes
+
+# Another job that needs the same secret
+abc-job:
+  stage: deploy
+  # Option 1: Direct dependency on both jobs
+  needs:
+    - job: use-token
+    - project: 'your-group/child-project'
+      job: export-token
+      artifacts: true
+  script:
+    # The token is available through either source
+    - curl -H "Authorization: Bearer $EXPORTED_SECRET_TOKEN" https://another-api.com/endpoint
+```
+
+### Alternative Approach: Create a Dedicated Secret-Fetching Job
+
+For better organization, you can split the secret fetching into its own dedicated job:
+
+```yaml
+stages:
+  - prepare
+  - process
+  - deploy
+
+# Job solely responsible for fetching the secret
+fetch-secret:
+  stage: prepare
+  needs:
+    - project: 'your-group/child-project'
+      job: export-token
+      artifacts: true
+  script:
+    # Just pass through the secret from child project
+    - echo "SECRET_TOKEN=$EXPORTED_SECRET_TOKEN" > secrets.env
+  artifacts:
+    reports:
+      dotenv: secrets.env
+    expire_in: 30 minutes
+
+# Both jobs depend on the fetch-secret job
+use-token:
+  stage: process
+  needs:
+    - job: fetch-secret
+  script:
+    - curl -H "Authorization: Bearer $SECRET_TOKEN" https://your-api.com/endpoint
+
+abc-job:
+  stage: deploy
+  needs:
+    - job: fetch-secret
+  script:
+    - curl -H "Authorization: Bearer $SECRET_TOKEN" https://another-api.com/endpoint
+```
+
+### Using DAG (Directed Acyclic Graph) Keywords
+
+For more complex dependency chains, you can leverage GitLab's DAG keywords:
+
+```yaml
+stages:
+  - prepare
+  - process
+  - deploy
+
+fetch-secret:
+  stage: prepare
+  needs:
+    - project: 'your-group/child-project'
+      job: export-token
+      artifacts: true
+  script:
+    - echo "SECRET_TOKEN=$EXPORTED_SECRET_TOKEN" > secrets.env
+  artifacts:
+    reports:
+      dotenv: secrets.env
+    expire_in: 30 minutes
+
+use-token:
+  stage: process
+  needs:
+    - job: fetch-secret
+  script:
+    - curl -H "Authorization: Bearer $SECRET_TOKEN" https://your-api.com/endpoint
+
+abc-job:
+  stage: deploy
+  # Use both explicit dependencies and DAG keyword
+  needs:
+    - job: fetch-secret  # For the secret
+    - job: use-token     # To run after use-token completes
+  script:
+    - curl -H "Authorization: Bearer $SECRET_TOKEN" https://another-api.com/endpoint
+```
+
+### Best Practices
+
+1. **Explicit over implicit**: Always specify dependencies with `needs:` rather than relying solely on pipeline stages
+2. **Minimize secret exposure**: Pass secrets only to jobs that actually need them
+3. **Short artifact lifetimes**: Use the shortest practical `expire_in` value for security
+4. **Consider parallel vs. serial execution**: With the above approaches, jobs can run in parallel if they're in the same stage, or sequentially based on the `needs:` directive
+
+This approach ensures that both `use-token` and `abc-job` have access to the secret while maintaining proper execution order based on your pipeline's needs.
