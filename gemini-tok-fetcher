@@ -6,3 +6,11 @@
       VARIABLE_VALUE=$(echo "$RESPONSE" | jq -r '.value')
 
       echo "Fetched variable value: $VARIABLE_VALUE"
+
+The last one is perfect for inline use in if statements:
+```bash
+if curl -s --head --max-time 5 --fail "$URL" >/dev/null 2>&1; then
+    echo "JAR exists"
+else
+    echo "JAR not found"
+fi
