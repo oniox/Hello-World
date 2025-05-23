@@ -1,0 +1,8 @@
+ # Make API call to fetch the variable
+      RESPONSE=$(curl --header "PRIVATE-TOKEN: $YOUR_PAT_VARIABLE" "https://gitlab.com/api/v4/projects/$OTHER_PROJECT_ID/variables/$VARIABLE_KEY")
+
+      # Extract the value (requires jq or similar for JSON parsing)
+      # Assuming the variable is of type 'env_var' and not 'file'
+      VARIABLE_VALUE=$(echo "$RESPONSE" | jq -r '.value')
+
+      echo "Fetched variable value: $VARIABLE_VALUE"
