@@ -1,0 +1,9 @@
+spring.datasource.hikari.keepalive-time=60000              # Every 60s, test idle connections with isValid()
+spring.datasource.hikari.validation-timeout=5000           # Give 5s max for isValid() check
+spring.datasource.hikari.max-lifetime=1800000              # 30m; retire connections before Azure closes them
+spring.datasource.hikari.idle-timeout=300000               # Evict if idle for 5m
+
+logging.level.com.zaxxer.hikari=DEBUG
+
+spring.datasource.hikari.keepalive-time=30000       # Validate every 30s
+spring.datasource.hikari.idle-timeout=120000        # Remove if idle for 2 minutes
