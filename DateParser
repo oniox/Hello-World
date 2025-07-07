@@ -1,0 +1,33 @@
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+
+public class DateParserJava8 {
+
+    private static final String DATE_FORMAT = "yyyy-MM-dd";
+    private static final DateTimeFormatter formatter = DateTimeFormatter.ofPattern(DATE_FORMAT);
+
+    /**
+     * Parses a date string in format "yyyy-MM-dd" to a LocalDate object
+     * @param dateString the date string to parse (e.g., "2025-04-03")
+     * @return the parsed LocalDate object
+     * @throws IllegalArgumentException if the date string is invalid
+     */
+    public static LocalDate parseDate(String dateString) {
+        try {
+            return LocalDate.parse(dateString, formatter);
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException("Invalid date format. Expected format: " + DATE_FORMAT + 
+                                           ", received: " + dateString);
+        }
+    }
+
+    /**
+     * Formats a LocalDate object to "yyyy-MM-dd" string format
+     * @param date the LocalDate object to format
+     * @return the formatted date string
+     */
+    public static String formatDate(LocalDate date) {
+        return date.format(formatter);
+    }
+}
